@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+﻿import { useState, useMemo } from 'react'
 import axios from 'axios'
 import './App.css'
 
@@ -19,7 +19,18 @@ function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem('zt_token'))
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [apiResult, setApiResult] = useState<any>(null)
-  const [userAgent, setUserAgent] = useState(navigator.userAgent)
+
+  const fingerprint = useMemo(() => {
+    const components = [
+      navigator.language,
+      screen.colorDepth,
+      screen.width + 'x' + screen.height,
+      new Date().getTimezoneOffset(),
+      navigator.hardwareConcurrency || 'unknown',
+      (navigator as any).deviceMemory || 'unknown'
+    ];
+    return btoa(components.join('|'));
+  }, []);
 
   const addLog = (method: string, endpoint: string, status: number, message: string, type: 'success' | 'error' | 'warning') => {
     const newLog: LogEntry = {
@@ -42,13 +53,17 @@ function App() {
 
       const response = await axios.post(`${BASE_URL}/auth/login`, params, {
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'X-Device-Fingerprint': fingerprint
         }
       })
-      const newToken = response.data.access_token
-      setToken(newToken)
-      localStorage.setItem('zt_token', newToken)
-      setApiResult(null) // Clear old errors
+      
+      const { access_token, refresh_token } = response.data
+      setToken(access_token)
+      localStorage.setItem('zt_token', access_token)
+      localStorage.setItem('zt_refresh_token', refresh_token)
+      
+      setApiResult(null)
       addLog('POST', '/auth/login', 200, 'Login Successful', 'success')
     } catch (error: any) {
       const status = error.response?.status || 500
@@ -57,11 +72,20 @@ function App() {
     }
   }
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      if (token) {
+        await axios.post(`${BASE_URL}/auth/logout`, {}, {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+      }
+    } catch (e) {}
+    
     setToken(null)
     localStorage.removeItem('zt_token')
+    localStorage.removeItem('zt_refresh_token')
     setApiResult(null)
-    addLog('INFO', 'Logout', 0, 'Session cleared. Please login again.', 'warning')
+    addLog('INFO', 'Logout', 0, 'Session cleared.', 'warning')
   }
 
   const callApi = async (endpoint: string, customHeaders = {}) => {
@@ -70,50 +94,17 @@ function App() {
       const response = await axios.get(`${BASE_URL}${endpoint}`, {
         headers: {
           Authorization: `Bearer ${token}`,
+          'X-Device-Fingerprint': fingerprint,
           ...customHeaders
         }
       })
       setApiResult(response.data)
-      addLog('GET', endpoint, 200, 'Access Granted', 'success')
+      addLog('GET', endpoint, 200, `Access Granted (Score: ${response.data.risk_score})`, 'success')
     } catch (error: any) {
       const status = error.response?.status || 500
       const detail = error.response?.data?.detail || 'Access Denied'
-      
-      // If token is invalid (401), we help the user by suggesting a logout
-      if (status === 401) {
-        addLog('SECURITY', 'JWT', 401, 'Token is invalid or tampered. Session compromised.', 'error')
-      }
-
-      setApiResult({ error: detail, status })
       addLog('GET', endpoint, status, detail, 'error')
-    }
-  }
-
-  // ATTACK SIMULATIONS
-  const simulateDeviceChange = () => {
-    addLog('ATTACK', '/api/dashboard', 0, 'Simulating Token Theft (Wrong Device)', 'warning')
-    callApi('/api/dashboard', { 'User-Agent': 'Hacker-Browser-9000' })
-  }
-
-  const tamperToken = () => {
-    if (!token) return
-    addLog('ATTACK', 'Local Storage', 0, 'Tampering with JWT Payload', 'warning')
-    
-    try {
-      // Very crude tampering - just to show it breaks signature
-      const parts = token.split('.')
-      if (parts.length === 3) {
-        const payload = JSON.parse(atob(parts[1]))
-        payload.role = 'admin' // Attempt escalation
-        const fakePayload = btoa(JSON.stringify(payload))
-        const tamperedToken = `${parts[0]}.${fakePayload}.${parts[2]}`
-        
-        setToken(tamperedToken)
-        localStorage.setItem('zt_token', tamperedToken)
-        addLog('INFO', 'JWT', 0, 'Token payload modified (Admin escalation attempt)', 'warning')
-      }
-    } catch (e) {
-      addLog('ERROR', 'JWT', 0, 'Failed to tamper token', 'error')
+      setApiResult({ error: detail, status })
     }
   }
 
@@ -121,29 +112,17 @@ function App() {
     <div className="container">
       <header>
         <h1>🛡️ Zero Trust Security Lab</h1>
-        <p className="subtitle">Continuous Verification & RBAC Testing Ground</p>
+        <p className="subtitle">Risk Engine & Policy Enforcement</p>
       </header>
 
       <div className="grid">
-        {/* SECTION 1: AUTHENTICATION */}
         <section className="card">
           <h2>🔑 1. Authentication</h2>
           {!token ? (
             <form onSubmit={handleLogin}>
-              <input 
-                type="email" 
-                value={email} 
-                onChange={e => setEmail(e.target.value)} 
-                placeholder="Email"
-              />
-              <input 
-                type="password" 
-                value={password} 
-                onChange={e => setPassword(e.target.value)} 
-                placeholder="Password"
-              />
+              <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" />
+              <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Password" />
               <button type="submit">Login</button>
-              <div className="hint">Try: admin@zero.trust / admin123</div>
             </form>
           ) : (
             <div className="auth-status">
@@ -153,69 +132,64 @@ function App() {
           )}
         </section>
 
-        {/* SECTION 2: CONTEXT INFO */}
         <section className="card">
-          <h2>🌐 2. Client Context</h2>
-          <div className="context-box">
-            <div className="context-item">
-              <label>Detected Device (User-Agent):</label>
-              <code>{userAgent.substring(0, 50)}...</code>
-            </div>
-            <div className="context-item">
-              <label>API Endpoint:</label>
-              <code>{BASE_URL}</code>
-            </div>
+          <h2>🧬 2. Context Info</h2>
+          <div className="context-item">
+             <label>Device Fingerprint Hash</label>
+             <code className="context-box">{fingerprint.substring(0, 30)}...</code>
+          </div>
+          <div className="context-item" style={{marginTop: '1rem'}}>
+             <label>Dynamic Risk Status</label>
+             <span className="badge" style={{background: '#2563eb', color: 'white', padding: '0.2rem 0.5rem', borderRadius: '4px'}}>ACTIVE</span>
           </div>
         </section>
 
-        {/* SECTION 3: PROTECTED RESOURCES */}
         <section className="card">
-          <h2>🔓 3. Resource Access</h2>
+          <h2>🔍 3. Policy Enforcement</h2>
           <div className="btn-group">
-            <button disabled={!token} onClick={() => callApi('/api/dashboard')}>Dashboard (All)</button>
-            <button disabled={!token} onClick={() => callApi('/api/data')}>Secure Data (All)</button>
-            <button disabled={!token} onClick={() => callApi('/api/admin')} className="btn-admin">Admin Portal (Admin Only)</button>
+            <button onClick={() => callApi('/api/dashboard')}>Dashboard (Score &lt; 60)</button>
+            <button onClick={() => callApi('/api/admin')} className="btn-admin">Admin Portal (Score &lt; 20)</button>
           </div>
-          {apiResult && (
-            <pre className={`result-box ${apiResult.error ? 'error' : 'success'}`}>
-              {JSON.stringify(apiResult, null, 2)}
-            </pre>
-          )}
         </section>
 
-        {/* SECTION 4: ATTACK SIMULATIONS */}
-        <section className="card highlight">
-          <h2>🔥 4. Attack Simulations</h2>
+        <section className="card">
+          <h2>🔥 4. Risk Engine Attacks</h2>
           <div className="btn-group">
-            <button disabled={!token} onClick={simulateDeviceChange} className="btn-danger">
-              Simulate Token Theft (Context Mismatch)
-            </button>
-            <button disabled={!token} onClick={tamperToken} className="btn-danger">
-              Tamper Token (Signature Violation)
-            </button>
+            <button onClick={() => callApi('/api/dashboard', { 'X-Device-Fingerprint': 'TAMPERED-ID' })} className="btn-danger">Simulate Device Change</button>
+            <button onClick={() => callApi('/api/admin', { 'X-Device-Fingerprint': 'TAMPERED-ID' })} className="btn-danger">Simulate Admin Breach</button>
           </div>
-          <p className="hint">These actions intentionally break security rules to test the backend response.</p>
         </section>
       </div>
 
-      {/* SECURITY AUDIT LOG */}
-      <section className="card log-section">
-        <h2>📜 Security Audit Log (Frontend)</h2>
+      <section className="log-section card">
+        <h2>📜 Security Event Logs</h2>
         <div className="log-container">
-          {logs.length === 0 && <p className="empty-log">No activity yet...</p>}
-          {logs.map((log, i) => (
-            <div key={i} className={`log-entry ${log.type}`}>
-              <span className="time">[{log.timestamp}]</span>
-              <span className="method">{log.method}</span>
-              <span className="endpoint">{log.endpoint}</span>
-              <span className="status">Status: {log.status}</span>
-              <span className="message">{log.message}</span>
-            </div>
-          ))}
+          {logs.length === 0 ? (
+            <div className="empty-log">No logs captured yet. Perform actions to see events.</div>
+          ) : (
+            logs.map((log, i) => (
+              <div key={i} className={`log-entry ${log.type}`}>
+                <span className="timestamp">[{log.timestamp}]</span>
+                <span className="method">{log.method}</span>
+                <span className="endpoint">{log.endpoint}</span>
+                <span className="status">({log.status})</span>
+                <span className="message">{log.message}</span>
+              </div>
+            ))
+          )}
         </div>
       </section>
+
+      {apiResult && (
+        <section className="card" style={{marginTop: '2rem'}}>
+          <h2>📊 API Response</h2>
+          <div className={`result-box ${apiResult.error ? 'error' : 'success'}`}>
+             <pre>{JSON.stringify(apiResult, null, 2)}</pre>
+          </div>
+        </section>
+      )}
     </div>
-  )
+  );
 }
 
-export default App
+export default App;
