@@ -1,4 +1,4 @@
-fastapi
+﻿fastapi
 uvicorn
 python-jose[cryptography]
 passlib[bcrypt]
@@ -9,3 +9,5 @@ python-dotenv
 httpx
 email-validator
 bcrypt==3.2.0
+slowapi
+sqlalchemy
