@@ -1,0 +1,5 @@
+/* Reset or minimal global styles if needed */
+body {
+  margin: 0;
+  padding: 0;
+}
